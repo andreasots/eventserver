@@ -40,12 +40,12 @@ class UnixServer(asyncio.Protocol):
                 command = json.loads(command.decode("utf-8"))
                 event = ""
                 if "event" in command:
-                    event += "event: "+command["event"]+"\n"
+                    event += "event: "+str(command["event"])+"\n"
                 if "data" in command:
                     for line in command["data"].split("\n"):
-                        event += "data: "+line+"\n"
+                        event += "data: "+str(line)+"\n"
                 if "id" in command:
-                    event += "id: "+command["id"]+"\n"
+                    event += "id: "+str(command["id"])+"\n"
                 event = (event+"\n").encode("utf-8")
                 remove_closed()
                 for client in clients[command["endpoint"]]:
