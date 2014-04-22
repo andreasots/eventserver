@@ -10,4 +10,11 @@ sse.send(json.dumps({
     "id": "12345"
 }).encode("utf-8")+b"\n")
 
+sse.send(json.dumps({
+    "endpoint": "/event",
+    "event": "event",
+    "data": "data1\ndata2",
+    "id": "12346"
+}).encode("utf-8")+b"\n")
+
 sse.close()

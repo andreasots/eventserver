@@ -42,7 +42,8 @@ class UnixServer(asyncio.Protocol):
                 if "event" in command:
                     event += "event: "+command["event"]+"\n"
                 if "data" in command:
-                    event += "data: "+command["data"]+"\n"
+                    for line in command["data"].split("\n"):
+                        event += "data: "+line+"\n"
                 if "id" in command:
                     event += "id: "+command["id"]+"\n"
                 event = (event+"\n").encode("utf-8")
