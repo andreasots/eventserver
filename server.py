@@ -56,7 +56,7 @@ except FileNotFoundError:
     pass
 
 loop = asyncio.get_event_loop()
-httpd = loop.create_server(lambda: HttpServer(), "::", 8080)
+httpd = loop.create_server(lambda: HttpServer(), "localhost", 8080)
 unixd = loop.create_unix_server(lambda: UnixServer(), path="/tmp/eventserver.sock")
 loop.run_until_complete(httpd)
 loop.run_until_complete(unixd)
