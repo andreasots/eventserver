@@ -6,9 +6,16 @@ def remove_closed():
     for e in clients:
         clients[e] = list(filter(lambda c: c.transport.get_extra_info("socket").fileno() != -1, clients[e]))
 
-def recurring_remove_closed():
+def send_keepalive():
     remove_closed()
-    asyncio.get_event_loop().call_later(30, recurring_remove_closed)
+    for endpoint in clients:
+        for client in clients[endpoint]:
+            client.write(b": keepalive\n\n")
+    asyncio.get_event_loop().call_later(60, send_keepalive)
+
+class FakeTransport(asyncio.BaseTransport):
+    def close(self):
+        pass
 
 class HttpServer(aiohttp.server.ServerHttpProtocol):
     @asyncio.coroutine
@@ -18,7 +25,7 @@ class HttpServer(aiohttp.server.ServerHttpProtocol):
         response.send_headers()
         clients.setdefault(message.path, [])
         clients[message.path] += [response]
-        self.keep_alive(True)
+        self.transport = FakeTransport()
 
 class UnixServer(asyncio.Protocol):
     def __init__(self, *args, **kwargs):
@@ -48,10 +55,10 @@ except FileNotFoundError:
     pass
 
 loop = asyncio.get_event_loop()
-httpd = loop.create_server(lambda: HttpServer(keep_alive=60), "::", 8080)
+httpd = loop.create_server(lambda: HttpServer(), "::", 8080)
 unixd = loop.create_unix_server(lambda: UnixServer(), path="/tmp/eventserver.sock")
 loop.run_until_complete(httpd)
 loop.run_until_complete(unixd)
-loop.call_later(30, recurring_remove_closed)
+loop.call_later(60, send_keepalive)
 loop.run_forever()
 
