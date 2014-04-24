@@ -60,6 +60,7 @@ httpd = loop.create_server(lambda: HttpServer(), "localhost", 8080)
 unixd = loop.create_unix_server(lambda: UnixServer(), path="/tmp/eventserver.sock")
 loop.run_until_complete(httpd)
 loop.run_until_complete(unixd)
+os.chmod("/tmp/eventserver.sock", 777)
 loop.call_later(60, send_keepalive)
 loop.run_forever()
 
