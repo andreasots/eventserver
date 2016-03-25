@@ -5,6 +5,7 @@ dependencies = [
  "rotor 0.6.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "rotor-http 0.6.0 (git+https://github.com/tailhook/rotor-http?rev=feaf6af)",
  "rotor-stream 0.5.1 (git+git://github.com/tailhook/rotor-stream?rev=1d0b856)",
+ "xdg-basedir 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -213,4 +214,9 @@ dependencies = [
  "winapi 0.2.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "winapi-build 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
+
+[[package]]
+name = "xdg-basedir"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
 
