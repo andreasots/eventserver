@@ -5,5 +5,5 @@ authors = ["Andreas Ots <andreasots@gmail.com>"]
 
 [dependencies]
 rotor = "0.6.3"
-rotor-http = { git = "https://github.com/tailhook/rotor-http" }
-rotor-stream = {rev="1d0b856", git="git://github.com/tailhook/rotor-stream"}
+rotor-http = { git = "https://github.com/tailhook/rotor-http", rev = "feaf6af" }
+rotor-stream = { git = "git://github.com/tailhook/rotor-stream", rev = "1d0b856"}
