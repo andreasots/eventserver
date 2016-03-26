@@ -8,3 +8,4 @@ rotor = "0.6.3"
 rotor-http = { git = "https://github.com/tailhook/rotor-http", rev = "feaf6af" }
 rotor-stream = { git = "git://github.com/tailhook/rotor-stream", rev = "1d0b856"}
 xdg-basedir = "1.0.0"
+nom = "1.2.2"

@@ -3,9 +3,12 @@ extern crate rotor;
 extern crate rotor_http;
 extern crate rotor_stream;
 extern crate xdg_basedir;
+#[macro_use]
+extern crate nom;
 
 mod http;
 mod rpc;
+mod msgpack;
 
 pub struct Context;
 
@@ -27,16 +30,13 @@ fn main() {
     socket_path.pop();
 
     let config = rotor::Config::new();
-    let mut loop_creator = rotor::Loop::new(&config).unwrap();
+    let mut loop_ = rotor::Loop::new(&config).unwrap();
 
-    loop_creator.add_machine_with(|scope| {
-        http::Fsm::new(http_socket, http::Seed, scope).wrap(Fsm::Http)
-    }).unwrap();
-    loop_creator.add_machine_with(|scope| {
-        rpc::new(rpc_socket, rpc::Seed, scope).wrap(Fsm::Rpc)
-    }).unwrap();
+    loop_.add_machine_with(|scope| http::Fsm::new(http_socket, http::Seed, scope).wrap(Fsm::Http))
+         .unwrap();
+    loop_.add_machine_with(|scope| rpc::new(rpc_socket, rpc::Seed, scope).wrap(Fsm::Rpc)).unwrap();
 
     let context = Context;
 
-    loop_creator.instantiate(context).run().unwrap();
+    loop_.instantiate(context).run().unwrap();
 }

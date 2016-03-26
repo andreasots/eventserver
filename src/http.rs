@@ -17,23 +17,41 @@ impl Server for Machine {
     type Context = Context;
     type Seed = Seed;
 
-    fn headers_received(seed: Self::Seed, head: Head, response: &mut Response, scope: &mut Scope<Self::Context>) -> Option<(Self, RecvMode, Time)> {
+    fn headers_received(seed: Self::Seed,
+                        head: Head,
+                        response: &mut Response,
+                        scope: &mut Scope<Self::Context>)
+                        -> Option<(Self, RecvMode, Time)> {
         unimplemented!()
     }
 
-    fn request_received(self, data: &[u8], response: &mut Response, scope: &mut Scope<Self::Context>) -> Option<Self> {
+    fn request_received(self,
+                        data: &[u8],
+                        response: &mut Response,
+                        scope: &mut Scope<Self::Context>)
+                        -> Option<Self> {
         unimplemented!()
     }
 
-    fn request_chunk(self, chunk: &[u8], response: &mut Response, scope: &mut Scope<Self::Context>) -> Option<Self> {
+    fn request_chunk(self,
+                     chunk: &[u8],
+                     response: &mut Response,
+                     scope: &mut Scope<Self::Context>)
+                     -> Option<Self> {
         unimplemented!()
     }
 
-    fn request_end(self, response: &mut Response, scope: &mut Scope<Self::Context>) -> Option<Self> {
+    fn request_end(self,
+                   response: &mut Response,
+                   scope: &mut Scope<Self::Context>)
+                   -> Option<Self> {
         unimplemented!()
     }
 
-    fn timeout(self, response: &mut Response, scope: &mut Scope<Self::Context>) -> Option<(Self, Time)> {
+    fn timeout(self,
+               response: &mut Response,
+               scope: &mut Scope<Self::Context>)
+               -> Option<(Self, Time)> {
         unimplemented!()
     }
 
