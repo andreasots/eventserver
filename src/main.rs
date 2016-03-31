@@ -1,63 +1,32 @@
 #![feature(custom_derive, plugin)]
-#![plugin(serde_macros)]
+#![plugin(serde_macros, diesel_codegen)]
 
 #[macro_use]
 extern crate rotor;
 extern crate rotor_http;
 extern crate rotor_stream;
-extern crate xdg_basedir;
 extern crate serde;
 extern crate serde_json;
 #[macro_use]
 extern crate systemd;
 extern crate log;
 extern crate url;
+#[macro_use]
+extern crate diesel;
+extern crate clap;
+extern crate mime;
+extern crate multipart;
 
-macro_rules! log {
-    ($level:expr, $($args:tt)*) => ({
-        static LOC: ::log::LogLocation = ::log::LogLocation {
-            __line: line!(),
-            __file: file!(),
-            __module_path: module_path!()
-        };
-        ::systemd::journal::log($level, &LOC, &format_args!($($args)*))
-    });
-}
+use context::Context;
 
-macro_rules! error {
-    ($($args:tt)*) => (log!(3, $($args)*));
-}
-
-macro_rules! info {
-    ($($args:tt)*) => (log!(6, $($args)*));
-}
-
-macro_rules! debug {
-    ($($args:tt)*) => (log!(7, $($args)*));
-}
-
-macro_rules! log_result {
-    ($e:expr) => (match $e {
-        ::std::result::Result::Ok(o) => ::std::result::Result::Ok(o),
-        ::std::result::Result::Err(err) => {
-            error!("`{}` failed: {}", stringify!($e), err);
-            ::std::result::Result::Err(err)
-        }
-    })
-}
-
-macro_rules! nonblock {
-    ($e:expr) => (match $e {
-        ::std::result::Result::Ok(o) => ::std::result::Result::Ok(Some(o)),
-        ::std::result::Result::Err(ref err) if err.kind() == ::std::io::ErrorKind::WouldBlock => ::std::result::Result::Ok(None),
-        ::std::result::Result::Err(err) => ::std::result::Result::Err(err),
-    })
-}
-
-mod http;
-mod rpc;
-
-pub struct Context;
+#[macro_use]
+mod macros;
+pub mod context;
+pub mod http;
+pub mod models;
+pub mod rpc;
+pub mod rpc_methods;
+pub mod schema;
 
 rotor_compose! {
     pub enum Fsm/Seed<Context> {
@@ -66,24 +35,37 @@ rotor_compose! {
     }
 }
 
-fn send_event(scope: &mut rotor::Scope<Context>, param: serde_json::Value, user: Option<i32>) -> Result<serde_json::Value, serde_json::Value> {
-    Err(serde_json::Value::String(String::from("not yet implemented")))
-}
-
-fn main() {
+pub fn main() {
     systemd::journal::JournalLog::init().unwrap();
 
-    let mut socket_path = xdg_basedir::get_runtime_dir().expect("$XDG_RUNTIME_DIR unset");
+    let matches = clap::App::new("Server-sent events server")
+        .version(env!("CARGO_PKG_VERSION"))
+        .arg(clap::Arg::with_name("rpc-socket")
+            .long("rpc-socket")
+            .value_name("PATH")
+            .help("Path to RPC server socket")
+            .takes_value(true)
+            .required(true))
+        .arg(clap::Arg::with_name("http-socket")
+            .long("http-socket")
+            .value_name("PATH")
+            .help("Path to HTTP server socket")
+            .takes_value(true)
+            .required(true))
+        .arg(clap::Arg::with_name("database-url")
+            .long("database-url")
+            .value_name("URL")
+            .help("Postgres connection string")
+            .takes_value(true)
+            .required(true))
+        .get_matches();
 
-    socket_path.push("eventserver-http");
-    let http_socket = rotor::mio::unix::UnixListener::bind(&socket_path).unwrap();
-    socket_path.pop();
-    socket_path.push("eventserver-rpc");
-    let rpc_socket = rotor::mio::unix::UnixListener::bind(&socket_path).unwrap();
-    socket_path.pop();
+    let rpc_socket = rotor::mio::unix::UnixListener::bind(matches.value_of_os("rpc-socket").unwrap()).unwrap();
+    let http_socket = rotor::mio::unix::UnixListener::bind(matches.value_of_os("http-socket").unwrap()).unwrap();
 
     let mut functions = std::collections::HashMap::new();
-    functions.insert(String::from("send_event"), Box::new(send_event) as Box<_>);
+    functions.insert(String::from("send_event"), Box::new(rpc_methods::send_event) as Box<_>);
+    functions.insert(String::from("register_key"), Box::new(rpc_methods::register_key) as Box<_>);
     let functions = std::rc::Rc::new(std::cell::RefCell::new(functions));
 
     let config = rotor::Config::new();
@@ -93,7 +75,6 @@ fn main() {
          .unwrap();
     loop_.add_machine_with(|scope| rpc::new(rpc_socket, functions, scope).wrap(Fsm::Rpc)).unwrap();
 
-    let context = Context;
-
-    loop_.instantiate(context).run().unwrap();
+    loop_.instantiate(Context::new(matches.value_of("database-url").unwrap()).unwrap())
+        .run().unwrap();
 }

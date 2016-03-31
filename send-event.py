@@ -77,3 +77,4 @@ class RpcClient:
 loop = asyncio.get_event_loop()
 client = loop.run_until_complete(RpcClient.connect("eventserver-rpc"))
 loop.run_until_complete(client.send_event("/event", "subscriber", "lrrbot"))
+loop.run_until_complete(client.register_key("/event", "dickbutt"))

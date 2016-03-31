@@ -2,7 +2,7 @@ use rotor_stream::{Accept, Accepted, StreamSocket};
 use rotor::{Scope, Response, Void, GenericScope, Evented, EventSet, PollOpt};
 use rotor::void::unreachable;
 use rotor::mio::{TryAccept};
-use super::Context;
+use super::context::Context;
 use std::any::Any;
 use std::io;
 use serde_json::{self, Value};
