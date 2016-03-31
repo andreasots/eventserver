@@ -2,9 +2,9 @@ use rotor_stream::{Accept, Accepted, StreamSocket};
 use rotor::{Scope, Response, Void, GenericScope, Evented, EventSet, PollOpt};
 use rotor::void::unreachable;
 use rotor::mio::{TryAccept};
-use super::{Context};
+use super::Context;
 use std::any::Any;
-use std::io::{self, ErrorKind};
+use std::io;
 use serde_json::{self, Value};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -24,12 +24,9 @@ pub fn new<L: TryAccept + Evented + Any, S: GenericScope>(listener: L,
 }
 
 macro_rules! rotor_try {
-    ($e:expr) => (match $e {
+    ($e:expr) => (match log_result!($e) {
         ::std::result::Result::Ok(o) => o,
-        ::std::result::Result::Err(e) => {
-            error!("Called `rotor_try!` on an `Err` value: {}", e);
-            return ::rotor::Response::error(e.into());
-        },
+        ::std::result::Result::Err(e) => return ::rotor::Response::error(e.into()),
     });
 }
 
@@ -70,11 +67,7 @@ impl<S: StreamSocket> ::rotor::Machine for Machine<S> {
             return Response::done();
         }
         if events.is_readable() {
-            match io::copy(&mut self.socket, &mut self.read_buffer) {
-                Ok(_) => (),
-                Err(ref err) if err.kind() == ErrorKind::WouldBlock => (),
-                Err(err) => return Response::error(err.into()),
-            }
+            let _ = rotor_try!(nonblock!(io::copy(&mut self.socket, &mut self.read_buffer)));
 
             loop {
                 let bytes = {
@@ -91,9 +84,12 @@ impl<S: StreamSocket> ::rotor::Machine for Machine<S> {
                                     success: true,
                                     result: result,
                                 },
-                                Err(error) => Reply {
-                                    success: false,
-                                    result: error,
+                                Err(error) => {
+                                    error!("{:?} failed: {:?}", call.command, error);
+                                    Reply {
+                                        success: false,
+                                        result: error,
+                                    }
                                 },
                             };
                             rotor_try!(serde_json::to_writer(&mut self.write_buffer, &response));
@@ -113,10 +109,9 @@ impl<S: StreamSocket> ::rotor::Machine for Machine<S> {
         if events.is_writable() {
             let bytes = {
                 let mut buffer = &self.write_buffer[..];
-                match io::copy(&mut buffer, &mut self.socket) {
-                    Ok(bytes) => bytes as usize,
-                    Err(ref err) if err.kind() == ErrorKind::WouldBlock => self.write_buffer.len() - buffer.len(),
-                    Err(err) => return Response::error(err.into()),
+                match rotor_try!(nonblock!(io::copy(&mut buffer, &mut self.socket))) {
+                    Some(bytes) => bytes as usize,
+                    None => self.write_buffer.len() - buffer.len(),
                 }
             };
             for _ in self.write_buffer.drain(..bytes) {

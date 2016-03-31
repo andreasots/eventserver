@@ -9,7 +9,41 @@ extern crate xdg_basedir;
 extern crate serde;
 extern crate serde_json;
 #[macro_use]
+extern crate systemd;
 extern crate log;
+
+macro_rules! log {
+    ($level:expr, $($args:tt)*) => ({
+        static LOC: ::log::LogLocation = ::log::LogLocation {
+            __line: line!(),
+            __file: file!(),
+            __module_path: module_path!()
+        };
+        ::systemd::journal::log($level, &LOC, &format_args!($($args)*))
+    });
+}
+
+macro_rules! error {
+    ($($args:tt)*) => (log!(3, $($args)*));
+}
+
+macro_rules! log_result {
+    ($e:expr) => (match $e {
+        ::std::result::Result::Ok(o) => ::std::result::Result::Ok(o),
+        ::std::result::Result::Err(err) => {
+            error!("`{}` failed: {}", stringify!($e), err);
+            ::std::result::Result::Err(err)
+        }
+    })
+}
+
+macro_rules! nonblock {
+    ($e:expr) => (match $e {
+        ::std::result::Result::Ok(o) => ::std::result::Result::Ok(Some(o)),
+        ::std::result::Result::Err(ref err) if err.kind() == ::std::io::ErrorKind::WouldBlock => ::std::result::Result::Ok(None),
+        ::std::result::Result::Err(err) => ::std::result::Result::Err(err),
+    })
+}
 
 mod http;
 mod rpc;
@@ -28,6 +62,8 @@ fn send_event(scope: &mut rotor::Scope<Context>, param: serde_json::Value, user:
 }
 
 fn main() {
+    systemd::journal::JournalLog::init().unwrap();
+
     let mut socket_path = xdg_basedir::get_runtime_dir().expect("$XDG_RUNTIME_DIR unset");
 
     socket_path.push("eventserver-http");
