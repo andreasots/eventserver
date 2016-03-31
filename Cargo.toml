@@ -5,7 +5,9 @@ authors = ["Andreas Ots <andreasots@gmail.com>"]
 
 [dependencies]
 rotor = "0.6.3"
-rotor-http = { git = "https://github.com/tailhook/rotor-http", rev = "feaf6af" }
-rotor-stream = { git = "git://github.com/tailhook/rotor-stream", rev = "1d0b856"}
+rotor-http = "0.7.0"
+rotor-stream ="0.6.2"
 xdg-basedir = "1.0.0"
 nom = "1.2.2"
+log = "0.3.5"
+systemd = "0.0.7"

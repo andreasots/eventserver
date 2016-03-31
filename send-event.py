@@ -37,7 +37,7 @@ class RpcProtocol(asyncio.Protocol):
         self.transport = transport
 
     def connection_lost(self, exc):
-        self.eof_received(exc)
+        self.eof_received()
         self.transport = None
 
     def data_received(self, data):

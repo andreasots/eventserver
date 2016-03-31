@@ -5,6 +5,8 @@ extern crate rotor_stream;
 extern crate xdg_basedir;
 #[macro_use]
 extern crate nom;
+#[macro_use]
+extern crate log;
 
 mod http;
 mod rpc;

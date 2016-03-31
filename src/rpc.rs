@@ -6,6 +6,7 @@ use super::{msgpack, Context};
 use std::any::Any;
 use std::io::ErrorKind;
 use nom::IResult;
+use std::u32;
 
 pub type Fsm<L> = Accept<Machine<<L as TryAccept>::Output>, L>;
 
@@ -19,14 +20,25 @@ pub fn new<L: TryAccept + Evented + Any, S: GenericScope>(listener: L,
 }
 
 macro_rules! rotor_try {
-    ($e:expr) => (match $e.unwrap() {
+    ($e:expr) => (match $e {
         ::std::result::Result::Ok(o) => o,
-        ::std::result::Result::Err(e) => return ::rotor::Response::error(e.into()),
+        ::std::result::Result::Err(e) => {
+            error!("Called `rotor_try!` on an `Err` value: {}", e);
+            return ::rotor::Response::error(e.into());
+        },
     });
 }
 
-macro_rules! ensure_bytes {
-    ($buffer:expr, $n:expr, $error:expr) => (if $buffer.len() < $n { $error });
+macro_rules! nom_try {
+    ($e:expr, $on_incomplete:expr) => (match $e {
+        ::nom::IResult::Done(input, value) => (input, value),
+        ::nom::IResult::Incomplete(_) => $on_incomplete,
+        ::nom::IResult::Error(err) => {
+            let err = format!("{}", err);
+            error!("Parse error: {}", err);
+            return ::rotor::Response::error(err.into());
+        }
+    })
 }
 
 #[derive(Clone)]
@@ -89,21 +101,68 @@ impl<S: StreamSocket> ::rotor::Machine for Machine<S> {
             loop {
                 let new_state = match self.state {
                     State::ArrayLength => {
-                        match msgpack::parse_array_length(&self.buffer[..]) {
-                            IResult::Done(input, length) => {
-                                let buffer_len = self.buffer.len();
-                                self.buffer.consume(buffer_len - input.len());
-                                State::Type { length: length }
-                            }
-                            IResult::Incomplete(_) => continue 'read,
-                            IResult::Error(err) => return Response::error(err.into()),
-                        }
+                        let (length, consumed) = {
+                            let (input, length) = nom_try!(msgpack::parse_array_length(&self.buffer[..]), continue 'read);
+                            (length, self.buffer.len() - input.len())
+                        };
+                        self.buffer.consume(consumed);
+                        State::Type { length: length }
                     }
-                    State::Type { length } => unimplemented!(),
-                    State::Request(RequestState::Msgid) => unimplemented!(),
-                    State::Request(RequestState::Name { msgid }) => unimplemented!(),
+                    State::Type { length } => {
+                        let (ty, consumed) = {
+                            let (input, ty) = nom_try!(msgpack::parse_integer(&self.buffer[..]), continue 'read);
+                            (ty, self.buffer.len() - input.len())
+                        };
+                        self.buffer.consume(consumed);
+                        match ty {
+                            msgpack::Integer::Unsigned(0) | msgpack::Integer::Signed(0) => if length == 4 { State::Request(RequestState::Msgid) } else { unimplemented!() },
+                            msgpack::Integer::Unsigned(2) | msgpack::Integer::Signed(2) => if length == 3 { State::Notify(NotifyState::Name) } else { unimplemented!() },
+                            msgpack::Integer::Unsigned(n) => {
+                                error!("Unrecognised message type {}", n);
+                                return Response::error(format!("Unrecognised message type {}", n).into());
+                            },
+                            msgpack::Integer::Signed(n) => {
+                                error!("Unrecognised message type {}", n);
+                                return Response::error(format!("Unrecognised message type {}", n).into());
+                            },
+                        }
+                    },
+                    State::Request(RequestState::Msgid) => {
+                        let (ty, consumed) = {
+                            let (input, ty) = nom_try!(msgpack::parse_integer(&self.buffer[..]), continue 'read);
+                            (ty, self.buffer.len() - input.len())
+                        };
+                        self.buffer.consume(consumed);
+                        match ty {
+                            msgpack::Integer::Unsigned(msgid) if msgid < u32::MAX as u64 => State::Request(RequestState::Name { msgid: msgid as u32 }),
+                            msgpack::Integer::Signed(msgid) if msgid >= 0 && msgid < u32::MAX as i64 => State::Request(RequestState::Name { msgid: msgid as u32 }),
+                            msgpack::Integer::Unsigned(n) => {
+                                error!("Message ID {} is out of range.", n);
+                                return Response::error(format!("Message ID {} is out of range.", n).into());
+                            },
+                            msgpack::Integer::Signed(n) => {
+                                error!("Message ID {} is out of range.", n);
+                                return Response::error(format!("Message ID {} is out of range.", n).into());
+                            },
+                        }
+                    },
+                    State::Request(RequestState::Name { msgid }) => {
+                        let (name, consumed) = {
+                            let (input, name) = nom_try!(msgpack::parse_string(&self.buffer[..]), continue 'read);
+                            (name, self.buffer.len() - input.len())
+                        };
+                        self.buffer.consume(consumed);
+                        State::Request(RequestState::Args { msgid: msgid, name: name })
+                    },
                     State::Request(RequestState::Args { msgid, name }) => unimplemented!(),
-                    State::Notify(NotifyState::Name) => unimplemented!(),
+                    State::Notify(NotifyState::Name) => {
+                        let (name, consumed) = {
+                            let (input, name) = nom_try!(msgpack::parse_string(&self.buffer[..]), continue 'read);
+                            (name, self.buffer.len() - input.len())
+                        };
+                        self.buffer.consume(consumed);
+                        State::Notify(NotifyState::Args { msgid: msgid, name: name })
+                    },
                     State::Notify(NotifyState::Args { name }) => unimplemented!(),
                 };
 
