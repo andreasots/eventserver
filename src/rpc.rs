@@ -1,14 +1,18 @@
-use rotor_stream::{Accept, Accepted, Buf, StreamSocket};
+use rotor_stream::{Accept, Accepted, StreamSocket};
 use rotor::{Scope, Response, Void, GenericScope, Evented, EventSet, PollOpt};
 use rotor::void::unreachable;
-use rotor::mio::{TryAccept, TryRead, TryWrite};
-use super::{msgpack, Context};
+use rotor::mio::{TryAccept};
+use super::{Context};
 use std::any::Any;
-use std::io::ErrorKind;
-use nom::IResult;
-use std::u32;
+use std::io::{self, ErrorKind};
+use serde_json::{self, Value};
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::cell::RefCell;
 
 pub type Fsm<L> = Accept<Machine<<L as TryAccept>::Output>, L>;
+
+pub type Seed = Rc<RefCell<HashMap<String, Box<FnMut(&mut Scope<Context>, Value, Option<i32>) -> Result<Value, Value>>>>>;
 
 pub fn new<L: TryAccept + Evented + Any, S: GenericScope>(listener: L,
                                                           seed: Seed,
@@ -29,160 +33,111 @@ macro_rules! rotor_try {
     });
 }
 
-macro_rules! nom_try {
-    ($e:expr, $on_incomplete:expr) => (match $e {
-        ::nom::IResult::Done(input, value) => (input, value),
-        ::nom::IResult::Incomplete(_) => $on_incomplete,
-        ::nom::IResult::Error(err) => {
-            let err = format!("{}", err);
-            error!("Parse error: {}", err);
-            return ::rotor::Response::error(err.into());
-        }
-    })
+#[derive(Debug, Deserialize)]
+struct Call {
+    command: String,
+    param: Value,
+    user: Option<i32>,
 }
 
-#[derive(Clone)]
-pub struct Seed;
-
-#[derive(Debug)]
-enum RequestState {
-    Msgid,
-    Name {
-        msgid: u32,
-    },
-    Args {
-        msgid: u32,
-        name: String,
-    },
-}
-
-#[derive(Debug)]
-enum NotifyState {
-    Name,
-    Args {
-        name: String,
-    },
-}
-
-#[derive(Debug)]
-enum State {
-    ArrayLength,
-    Type {
-        length: u32,
-    },
-    Request(RequestState),
-    Notify(NotifyState),
+#[derive(Serialize)]
+struct Reply {
+    success: bool,
+    result: Value,
 }
 
 pub struct Machine<S> {
     socket: S,
-    buffer: Buf,
-    state: State,
+    read_buffer: Vec<u8>,
+    write_buffer: Vec<u8>,
+    functions: Seed,
 }
 
 impl<S: StreamSocket> ::rotor::Machine for Machine<S> {
     type Context = Context;
     type Seed = Void;
 
-    fn create(seed: Self::Seed, _scope: &mut Scope<Self::Context>) -> Response<Self, Void> {
+    fn create(seed: Self::Seed, _scope: &mut Scope<Context>) -> Response<Self, Void> {
         unreachable(seed)
     }
 
     fn ready(mut self,
              events: EventSet,
-             scope: &mut Scope<Self::Context>)
+             scope: &mut Scope<Context>)
              -> Response<Self, Self::Seed> {
-        'read: loop {
-            match self.buffer.read_from(&mut self.socket) {
+        if events.is_hup() {
+            rotor_try!(scope.deregister(&self.socket));
+            return Response::done();
+        }
+        if events.is_readable() {
+            match io::copy(&mut self.socket, &mut self.read_buffer) {
                 Ok(_) => (),
-                Err(ref err) if err.kind() == ErrorKind::WouldBlock => break,
+                Err(ref err) if err.kind() == ErrorKind::WouldBlock => (),
                 Err(err) => return Response::error(err.into()),
             }
-            loop {
-                let new_state = match self.state {
-                    State::ArrayLength => {
-                        let (length, consumed) = {
-                            let (input, length) = nom_try!(msgpack::parse_array_length(&self.buffer[..]), continue 'read);
-                            (length, self.buffer.len() - input.len())
-                        };
-                        self.buffer.consume(consumed);
-                        State::Type { length: length }
-                    }
-                    State::Type { length } => {
-                        let (ty, consumed) = {
-                            let (input, ty) = nom_try!(msgpack::parse_integer(&self.buffer[..]), continue 'read);
-                            (ty, self.buffer.len() - input.len())
-                        };
-                        self.buffer.consume(consumed);
-                        match ty {
-                            msgpack::Integer::Unsigned(0) | msgpack::Integer::Signed(0) => if length == 4 { State::Request(RequestState::Msgid) } else { unimplemented!() },
-                            msgpack::Integer::Unsigned(2) | msgpack::Integer::Signed(2) => if length == 3 { State::Notify(NotifyState::Name) } else { unimplemented!() },
-                            msgpack::Integer::Unsigned(n) => {
-                                error!("Unrecognised message type {}", n);
-                                return Response::error(format!("Unrecognised message type {}", n).into());
-                            },
-                            msgpack::Integer::Signed(n) => {
-                                error!("Unrecognised message type {}", n);
-                                return Response::error(format!("Unrecognised message type {}", n).into());
-                            },
-                        }
-                    },
-                    State::Request(RequestState::Msgid) => {
-                        let (ty, consumed) = {
-                            let (input, ty) = nom_try!(msgpack::parse_integer(&self.buffer[..]), continue 'read);
-                            (ty, self.buffer.len() - input.len())
-                        };
-                        self.buffer.consume(consumed);
-                        match ty {
-                            msgpack::Integer::Unsigned(msgid) if msgid < u32::MAX as u64 => State::Request(RequestState::Name { msgid: msgid as u32 }),
-                            msgpack::Integer::Signed(msgid) if msgid >= 0 && msgid < u32::MAX as i64 => State::Request(RequestState::Name { msgid: msgid as u32 }),
-                            msgpack::Integer::Unsigned(n) => {
-                                error!("Message ID {} is out of range.", n);
-                                return Response::error(format!("Message ID {} is out of range.", n).into());
-                            },
-                            msgpack::Integer::Signed(n) => {
-                                error!("Message ID {} is out of range.", n);
-                                return Response::error(format!("Message ID {} is out of range.", n).into());
-                            },
-                        }
-                    },
-                    State::Request(RequestState::Name { msgid }) => {
-                        let (name, consumed) = {
-                            let (input, name) = nom_try!(msgpack::parse_string(&self.buffer[..]), continue 'read);
-                            (name, self.buffer.len() - input.len())
-                        };
-                        self.buffer.consume(consumed);
-                        State::Request(RequestState::Args { msgid: msgid, name: name })
-                    },
-                    State::Request(RequestState::Args { msgid, name }) => unimplemented!(),
-                    State::Notify(NotifyState::Name) => {
-                        let (name, consumed) = {
-                            let (input, name) = nom_try!(msgpack::parse_string(&self.buffer[..]), continue 'read);
-                            (name, self.buffer.len() - input.len())
-                        };
-                        self.buffer.consume(consumed);
-                        State::Notify(NotifyState::Args { msgid: msgid, name: name })
-                    },
-                    State::Notify(NotifyState::Args { name }) => unimplemented!(),
-                };
 
-                println!("{:?} -> {:?}", self.state, new_state);
-                self.state = new_state;
+            loop {
+                let bytes = {
+                    let mut iter = self.read_buffer.splitn(2, |&b| b == b'\n');
+                    match (iter.next(), iter.next()) {
+                        (Some(msg), Some(tail)) => {
+                            let call = rotor_try!(serde_json::from_slice::<Call>(msg));
+                            let response = match self.functions.borrow_mut().get_mut(&call.command) {
+                                Some(func) => (func)(scope, call.param, call.user),
+                                None => Err(Value::String(format!("No method named {:?}", call.command))),
+                            };
+                            let response = match response {
+                                Ok(result) => Reply {
+                                    success: true,
+                                    result: result,
+                                },
+                                Err(error) => Reply {
+                                    success: false,
+                                    result: error,
+                                },
+                            };
+                            rotor_try!(serde_json::to_writer(&mut self.write_buffer, &response));
+                            self.write_buffer.push(b'\n');
+                            rotor_try!(scope.reregister(&self.socket, EventSet::hup() | EventSet::readable() | EventSet::writable(), PollOpt::edge()));
+
+                            self.read_buffer.len() - tail.len()
+                        },
+                        (Some(_), None) => break,
+                        (None, _) => unreachable!(),
+                    }
+                };
+                for _ in self.read_buffer.drain(..bytes) {
+                }
+            }
+        }
+        if events.is_writable() {
+            let bytes = {
+                let mut buffer = &self.write_buffer[..];
+                match io::copy(&mut buffer, &mut self.socket) {
+                    Ok(bytes) => bytes as usize,
+                    Err(ref err) if err.kind() == ErrorKind::WouldBlock => self.write_buffer.len() - buffer.len(),
+                    Err(err) => return Response::error(err.into()),
+                }
+            };
+            for _ in self.write_buffer.drain(..bytes) {
+            }
+            if self.write_buffer.len() == 0 {
+                rotor_try!(scope.reregister(&self.socket, EventSet::hup() | EventSet::readable(), PollOpt::edge()));
             }
         }
 
         Response::ok(self)
     }
 
-    fn spawned(self, scope: &mut Scope<Self::Context>) -> Response<Self, Self::Seed> {
+    fn spawned(self, _scope: &mut Scope<Context>) -> Response<Self, Self::Seed> {
         Response::ok(self)
     }
 
-    fn timeout(self, scope: &mut Scope<Self::Context>) -> Response<Self, Self::Seed> {
+    fn timeout(self, _scope: &mut Scope<Context>) -> Response<Self, Self::Seed> {
         Response::ok(self)
     }
 
-    fn wakeup(self, scope: &mut Scope<Self::Context>) -> Response<Self, Self::Seed> {
+    fn wakeup(self, _scope: &mut Scope<Context>) -> Response<Self, Self::Seed> {
         Response::ok(self)
     }
 }
@@ -193,17 +148,18 @@ impl<S: StreamSocket> Accepted for Machine<S> {
 
     fn accepted(socket: Self::Socket,
                 seed: Seed,
-                scope: &mut Scope<Self::Context>)
+                scope: &mut Scope<Context>)
                 -> Response<Self, Void> {
-        match scope.register(&socket, EventSet::readable(), PollOpt::edge()) {
+        match scope.register(&socket, EventSet::hup() | EventSet::readable(), PollOpt::edge()) {
             Ok(()) => (),
             Err(err) => return Response::error(err.into()),
         }
 
         Response::ok(Machine {
             socket: socket,
-            buffer: Buf::new(),
-            state: State::ArrayLength,
+            read_buffer: Vec::new(),
+            write_buffer: Vec::new(),
+            functions: seed,
         })
     }
 }

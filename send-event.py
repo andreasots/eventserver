@@ -1,8 +1,8 @@
 import asyncio
+import collections
+import json
 import logging
 import os
-
-import msgpack
 
 log = logging.getLogger("send-event")
 
@@ -13,24 +13,21 @@ class RpcException(Exception):
 
 class RpcProtocol(asyncio.Protocol):
     def __init__(self):
-        self.counter = 0
-        self.pending = {}
+        self.pending = collections.deque()
         self.transport = None
+        self.buffer = b""
 
-        self.partial = [None, []]
-
-    def request(self, function, args):
+    def request(self, function, args, user):
         if self.transport is None:
             raise ConnectionError("Not connected.")
-        self.transport.write(msgpack.packb([0, self.counter, function, args],
-                                           use_bin_type=True))
-        future = self.pending[self.counter] = asyncio.Future()
-
-        while True:
-            self.counter = (self.counter + 1) & 0xFFFFFFFF
-            if self.counter not in self.pending:
-                break
-
+        self.transport.write(json.dumps({
+            "command": function,
+            "param": args,
+            "user": user
+        }).encode("utf-8"))
+        self.transport.write(b"\n")
+        future = asyncio.Future()
+        self.pending.append(future)
         return future
 
     def connection_made(self, transport):
@@ -41,34 +38,18 @@ class RpcProtocol(asyncio.Protocol):
         self.transport = None
 
     def data_received(self, data):
-        self.unpacker.feed(data)
-        while True:
-            if self.partial[0] is None:
-                try:
-                    self.partial[0] = self.unpacker.read_array_header()
-                except msgpack.OutOfData:
-                    return
-            elif len(self.partial[1]) < self.partial[0]:
-                try:
-                    self.partial[1].append(self.unpacker.unpack())
-                except msgpack.OutOfData:
-                    return
+        self.buffer += data
+        *messages, self.buffer = self.buffer.split(b'\n')
+        for message in messages:
+            message = json.loads(message.decode('utf-8'))
+            future = self.pending.popleft()
+            if message['success']:
+                future.set_result(message['result'])
             else:
-                msgtype, *_ = self.partial[1]
-                if msgtype == 1:
-                    msgtype, msgid, err, result = self.partial[1]
-                    if err is not None:
-                        self.pending[msgid].set_exception(RpcException(err))
-                    else:
-                        self.pending[msgid].set_result(result)
-                    del self.pending[msgid]
-                else:
-                    log.warn("Unrecognised RPC response type: %d, message: %r",
-                             msgtype, self.partial[1][1:])
-                self.partial = [None, []]
+                future.set_exception(RpcException(message['result']))
 
     def eof_received(self):
-        for future in self.pending.values():
+        for future in self.pending:
             future.cancel()
         self.pending.clear()
 
@@ -78,7 +59,7 @@ class RpcClient:
         self._protocol = protocol
 
     @classmethod
-    async def connect(cls, path, *args, loop=None, **kwargs):
+    async def connect(cls, path, user=None, *args, loop=None, **kwargs):
         if not os.path.isabs(path):
             path = os.path.join(os.environ["XDG_RUNTIME_DIR"], path)
         if loop is None:
@@ -89,7 +70,9 @@ class RpcClient:
         return cls(protocol)
 
     def __getattr__(self, name):
-        return lambda *args: self._protocol.request(name, args)
+        def rpc_method(*args, user=None):
+            return self._protocol.request(name, args, user)
+        return rpc_method
 
 loop = asyncio.get_event_loop()
 client = loop.run_until_complete(RpcClient.connect("eventserver-rpc"))
