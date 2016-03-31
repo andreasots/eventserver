@@ -11,6 +11,7 @@ extern crate serde_json;
 #[macro_use]
 extern crate systemd;
 extern crate log;
+extern crate url;
 
 macro_rules! log {
     ($level:expr, $($args:tt)*) => ({
@@ -25,6 +26,14 @@ macro_rules! log {
 
 macro_rules! error {
     ($($args:tt)*) => (log!(3, $($args)*));
+}
+
+macro_rules! info {
+    ($($args:tt)*) => (log!(6, $($args)*));
+}
+
+macro_rules! debug {
+    ($($args:tt)*) => (log!(7, $($args)*));
 }
 
 macro_rules! log_result {
